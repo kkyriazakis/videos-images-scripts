@@ -1,5 +1,6 @@
 {
   "ffmpeg": "C:\\ffmpeg\\bin\\ffmpeg.exe",
   "ffprobe": "C:\\ffmpeg\\bin\\ffprobe.exe",
-  "mkvmerge": "C:\\Users\\klean\\OneDrive\\Documents\\mkvtoolnix\\mkvmerge.exe"
+  "mkvmerge": "C:\\Users\\klean\\OneDrive\\Documents\\mkvtoolnix\\mkvmerge.exe",
+  "exiftool": "C:\\ExifTool\\exiftool.exe"
 }
