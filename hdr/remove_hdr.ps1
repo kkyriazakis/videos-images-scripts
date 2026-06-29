@@ -28,7 +28,7 @@ if (-not $ConfigFile) {
 try {
     $cfg = Get-Content -Raw $ConfigFile | ConvertFrom-Json
 } catch {
-    Write-Error "Failed to parse $ConfigFile: $_"
+    Write-Error "Failed to parse $($ConfigFile): $_"
     exit 1
 }
 

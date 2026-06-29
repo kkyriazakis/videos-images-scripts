@@ -1,8 +1,8 @@
 $ErrorActionPreference = "Stop"
 
 # --- HARD-CODED FOLDERS (EDIT THESE) ---
-$SRC_ROOT = "X:\Movies\Marvel-hdr"
-$DST_ROOT = "X:\Movies\Marvel"
+$SRC_ROOT = "F:\torr"
+$DST_ROOT = "F:\torr\no_hdr"
 # ---------------------------------------
 
 $THIS_DIR = Split-Path -Parent $MyInvocation.MyCommand.Path

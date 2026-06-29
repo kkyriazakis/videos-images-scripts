@@ -1,7 +1,7 @@
-Rename utilities
-================
+# Rename utilities
 
 Examples
+
 ```bash
 python rename/filename_normalize.py "X:\\path\\to\\folder" --dry
 python rename/filename_normalize.py "X:\\path\\to\\folder"
