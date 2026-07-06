@@ -1,3 +1,5 @@
+# .\remove_hdr.ps1 -InFile "X:\TV_Shows_Raw\hdr.mkv" -OutFile "X:\TV Shows\sdr.mkv"
+
 param(
     [Parameter(Mandatory=$true)]
     [string]$InFile,
@@ -122,7 +124,7 @@ Write-Host "Running ffmpeg..."
 
 & $FFMPEG -y -hide_banner `
     -i "$InFile" `
-    -map 0 `
+    -map 0:v:0 -map 0:a? -map 0:s? `
     -vf "$VF" `
     -c:v h264_nvenc -preset p5 -rc vbr `
     -b:v "$BITRATE" -maxrate "$MAXRATE" -bufsize "$BUFSIZE" `
