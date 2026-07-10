@@ -4,13 +4,18 @@ from pathlib import Path
 
 # Configuration: Set the pattern and new name format here
 OLD_NAME_PATTERN = r'Επεισόδιο_(\d+)___MEGA_TV_SS\.mp4'
-NEW_NAME_FORMAT = 'latremenoi-mou-geitones-ep-{1}.mp4'
+# OLD_NAME_PATTERN = r'tv-show-s02e(\d+)\.mp4'
+NEW_NAME_FORMAT = 'psithuroi-kardias-s01e{1}.mp4'
+
+EP_OFFSET = 0
+
+PATH = Path('X:\\scripts\\voe-dl\\psithuroi-kardias')
 
 def mass_rename():
     """Rename files matching the pattern to the new format"""
     
     # Get current directory
-    current_dir = Path('./latremenoi-mou-geitones')
+    current_dir = PATH
     
     # Compile the pattern
     pattern = re.compile(OLD_NAME_PATTERN)
@@ -25,7 +30,9 @@ def mass_rename():
                 groups = match.groups()
                 new_name = NEW_NAME_FORMAT
                 for i, group in enumerate(groups, start=1):
-                    new_name = new_name.replace(f'{{{i}}}', group)
+                    ep_number = int(group) - EP_OFFSET
+                    ep_number = str(ep_number).zfill(2)
+                    new_name = new_name.replace(f'{{{i}}}', ep_number)
                 new_path = current_dir / new_name
                 
                 # Check if target already exists
