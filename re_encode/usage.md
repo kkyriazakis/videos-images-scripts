@@ -14,6 +14,7 @@ python lower_quality_folder.py "F:\\got_no_hdr\\Season5" --quality 70
 # Recurse into subfolders:
 python lower_quality_folder.py "F:\\got_no_hdr" --quality 70 --recursive
 
+python repair_library.py "X:\TV Shows\to-kokkino-domatio\Season 1"
 ```
 
 Notes:
