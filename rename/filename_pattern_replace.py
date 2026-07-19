@@ -3,13 +3,14 @@ import re
 from pathlib import Path
 
 # Configuration: Set the pattern and new name format here
-OLD_NAME_PATTERN = r'Επεισόδιο_(\d+)___MEGA_TV_SS\.mp4'
+OLD_NAME_PATTERN = r'__show-S06E(\d+)\.mp4'
 # OLD_NAME_PATTERN = r'tv-show-s02e(\d+)\.mp4'
-NEW_NAME_FORMAT = 'psithuroi-kardias-s01e{1}.mp4'
+
+NEW_NAME_FORMAT = 'show-S06E{1}.mp4'
 
 EP_OFFSET = 0
 
-PATH = Path('X:\\scripts\\voe-dl\\psithuroi-kardias')
+PATH = Path('X:\\scripts\\voe-dl\\undone')
 
 def mass_rename():
     """Rename files matching the pattern to the new format"""

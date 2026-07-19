@@ -22,7 +22,8 @@ https://voe.sx/yyyyyyy
 Run:
 
 ```bash
-voe-dl -l links.txt -w 8
+voe-dl -l links.txt -w 8 -d outfolder
+./voe-dl -l soi.txt -w 8 -d soi
 ```
 
 add the `-w` option to set number of parallel workers (Default is 4)
