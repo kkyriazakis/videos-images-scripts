@@ -1,4 +1,4 @@
-# python strip_subs.py "F:\torr\marv\Ant-Man.mkv"
+# python strip_subs.py "F:\torr"
 
 import subprocess
 import json
@@ -27,13 +27,15 @@ except Exception as e:
 def has_subtitles(path: Path):
     r = subprocess.run(
         [FFPROBE, "-v", "quiet", "-print_format", "json", "-show_streams", str(path)],
-        capture_output=True, text=True
+        capture_output=True, text=True, encoding="utf-8", errors="replace"
     )
     if r.returncode != 0:
         return None
+    if not r.stdout:
+        return None
     try:
         data = json.loads(r.stdout)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, TypeError):
         return None
     for stream in data.get("streams", []):
         if stream.get("codec_type") == "subtitle":
