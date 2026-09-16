@@ -2,5 +2,5 @@
   "ffmpeg": "C:\\ffmpeg\\bin\\ffmpeg.exe",
   "ffprobe": "C:\\ffmpeg\\bin\\ffprobe.exe",
   "mkvmerge": "C:\\Program Files\\MKVToolNix\\mkvmerge.exe",
-  "exiftool": "X:\\scripts\\ExifTool\\exiftool.exe"
+  "exiftool": "F:\\videos-images-scripts\\ExifTool\\exiftool.exe"
 }
