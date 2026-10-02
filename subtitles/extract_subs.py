@@ -1,4 +1,4 @@
-# python extract_subs.py "F:\torr\marv\Ant-Man.mkv"
+# python extract_subs.py "F:\torr\Captain America Civil War.mkv"
 
 import subprocess
 import json
