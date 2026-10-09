@@ -1,0 +1,6 @@
+{
+  "ffmpeg": "/usr/bin/ffmpeg",
+  "ffprobe": "/usr/bin/ffprobe",
+  "mkvmerge": "/usr/bin/mkvmerge",
+  "exiftool": "/usr/bin/vendor_perl/exiftool"
+}
