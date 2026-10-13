@@ -15,20 +15,28 @@ is carried over bit-for-bit:
 Limitations (warned about at runtime):
   - Dolby Vision RPU and HDR10+ dynamic metadata cannot be carried into AV1 by
     ffmpeg; the HDR10 base layer is kept. DV profile 5 (no HDR10 base layer)
-    is refused unless --force is given, since colors would be wrong.
+        requires --test for a random one-minute conversion preview, then --force
+        for a full color-aware conversion with libplacebo.
+    - Converted Dolby Vision produces HDR10-compatible BT.2020/PQ video, not
+        Dolby Vision. Static mastering metadata is not invented if absent.
+    - Sources shorter than one minute use their full duration for --test.
 
 After encoding the output is probed and compared against the source; the
-script exits non-zero if anything other than the video codec changed.
+script exits non-zero if anything other than the video codec or explicitly
+converted Dolby Vision color properties changed.
 
 Usage:
-    python encode_av1_4k.py <input.mkv> [--v-bitrate 21000k] [--output out.mkv] [--force]
-    python encode_av1_4k.py "F:\torr\out\The Gentlemen.mkv" --v-bitrate 21000k --output "F:\torr\out\The Gentlemen_enc.mkv"
+    python encode_av1_4k.py <input.mkv> [--v-bitrate 21000k] [--output out.mkv] [--test | --force]
+    python encode_av1_4k.py "input_path" --v-bitrate 22000k --output "output_path"
 """
 
 import argparse
 import subprocess
 import json
+import math
+import random
 import sys
+import tempfile
 from fractions import Fraction
 from pathlib import Path
 
@@ -62,13 +70,25 @@ def probe_streams(input_path: str) -> list:
     return json.loads(result.stdout).get("streams", [])
 
 
-def probe_first_frame_side_data(input_path: str, stream_index: int) -> list:
+def probe_duration(input_path: str) -> float:
+    """Return a finite positive duration for choosing a test segment."""
+    result = subprocess.run([
+        FFPROBE, "-v", "error", "-show_entries", "format=duration",
+        "-of", "json", input_path,
+    ], capture_output=True, text=True, check=True)
+    duration = float(json.loads(result.stdout)["format"]["duration"])
+    if not math.isfinite(duration) or duration <= 0:
+        raise ValueError("Source duration must be finite and positive")
+    return duration
+
+
+def probe_first_frame_side_data(input_path: str, stream_index: int, start_time: float = 0) -> list:
     """Return side data of the first decoded frame of a stream (HDR metadata often lives here)."""
     cmd = [
         FFPROBE, "-v", "quiet",
         "-print_format", "json",
         "-select_streams", str(stream_index),
-        "-read_intervals", "%+#1",
+        "-read_intervals", f"{start_time}%+#1",
         "-show_frames",
         "-show_entries", "frame=side_data_list",
         input_path,
@@ -95,6 +115,18 @@ def find_side_data(side_data: list, kind: str) -> dict | None:
         if kind.lower() in sd.get("side_data_type", "").lower():
             return sd
     return None
+
+
+DOVI_HDR_FILTER = (
+    "libplacebo=apply_dolbyvision=1:colorspace=bt2020nc:"
+    "color_primaries=bt2020:color_trc=smpte2084:range=tv:format=yuv420p10le"
+)
+HDR_COLOR_PROPERTIES = {
+    "color_primaries": "bt2020",
+    "color_transfer": "smpte2084",
+    "color_space": "bt2020nc",
+    "color_range": "tv",
+}
 
 
 def build_hdr_params(stream: dict, frame_side_data: list) -> tuple[list, list]:
@@ -125,8 +157,8 @@ def build_hdr_params(stream: dict, frame_side_data: list) -> tuple[list, list]:
         profile = dovi.get("dv_profile")
         compat = dovi.get("dv_bl_signal_compatibility_id")
         if profile == 5 or compat == 0:
-            warnings.append(f"DOLBY VISION profile {profile} has no HDR10/SDR base layer - "
-                            "output colors WILL be wrong. Use --force to encode anyway.")
+            warnings.append(f"DOLBY VISION profile {profile} has no HDR10/SDR base layer."
+                            "\nUse --test to create a one-minute color-aware segment")
         else:
             warnings.append(f"Dolby Vision profile {profile} RPU will be dropped; "
                             "the HDR10/HLG/SDR base layer is kept.")
@@ -158,14 +190,24 @@ def summarize(s: dict) -> dict:
     return d
 
 
-def verify(src_streams: list, output_path: str) -> bool:
+def verify(src_streams: list, output_path: str, converted_indices: set | None = None) -> bool:
     out_streams = probe_streams(output_path)
+    converted_indices = converted_indices or set()
     ok = True
     if len(src_streams) != len(out_streams):
         print(f"[FAIL] Stream count changed: {len(src_streams)} -> {len(out_streams)}")
         return False
     for a, b in zip(src_streams, out_streams):
         sa, sb = summarize(a), summarize(b)
+        converted = a.get("index") in converted_indices
+        if converted:
+            sa.update(HDR_COLOR_PROPERTIES, pix_fmt="yuv420p10le")
+            sb["pix_fmt"] = b.get("pix_fmt")
+            side = b.get("side_data_list", []) + probe_first_frame_side_data(output_path, b["index"])
+            if any("dovi" in data.get("side_data_type", "").lower()
+                   or "dolby vision" in data.get("side_data_type", "").lower() for data in side):
+                print(f"[FAIL] stream #{b.get('index')} still signals Dolby Vision after conversion")
+                ok = False
         for key in sa:
             # Unset source color tags may legitimately be written as defaults.
             if key.startswith("color_") and sa[key] in (None, "unknown"):
@@ -179,14 +221,33 @@ def verify(src_streams: list, output_path: str) -> bool:
     return ok
 
 
-def reencode(input_path: str, v_bitrate: str, output_path: str | None = None, force: bool = False):
+def reencode(input_path: str, v_bitrate: str, output_path: str | None = None,
+             force: bool = False, dovi_to_hdr10: bool = False, test: bool = False):
     input_p = Path(input_path)
     if not input_p.exists():
         print(f"[ERROR] File not found: {input_path}")
         sys.exit(1)
 
+    if test and force:
+        print("[ERROR] Choose --test for a preview or --force for a full encode, not both.")
+        sys.exit(2)
+
+    start_time = 0.0
+    test_duration = None
+    if test:
+        try:
+            duration = probe_duration(input_path)
+        except (ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
+            print(f"[ERROR] Cannot choose a test segment: {error}")
+            sys.exit(2)
+        test_duration = min(60.0, duration)
+        start_time = random.uniform(0.0, max(0.0, duration - test_duration))
+        print(f"[INFO] Test segment: {start_time:.3f}s to {start_time + test_duration:.3f}s "
+              f"({test_duration:.3f}s).")
+
     if output_path is None:
-        output_path = str(input_p.parent / f"{input_p.stem}_av1{input_p.suffix}")
+        suffix = "_av1_test" if test else "_av1"
+        output_path = str(input_p.parent / f"{input_p.stem}{suffix}{input_p.suffix}")
 
     streams = probe_streams(input_path)
     for s in streams:
@@ -204,8 +265,19 @@ def reencode(input_path: str, v_bitrate: str, output_path: str | None = None, fo
         print("[ERROR] No video stream found.")
         sys.exit(1)
 
+    remux_attachments = any(s.get("disposition", {}).get("attached_pic", 0) for s in streams)
+    excluded_indices = {
+        s["index"] for s in streams
+        if remux_attachments and (s.get("codec_type") == "attachment"
+                                  or s.get("disposition", {}).get("attached_pic", 0))
+    }
+    output_indices = {
+        s["index"]: output_index
+        for output_index, s in enumerate(s for s in streams if s["index"] not in excluded_indices)
+    }
     cmd = [
         FFMPEG, "-y",
+        *(["-ss", f"{start_time:.6f}"] if test else []),
         "-i", input_path,
         "-map", "0",                          # include EVERY stream from the input
         "-c", "copy",                         # copy everything by default (audio, subs, attachments, cover art)
@@ -214,14 +286,40 @@ def reencode(input_path: str, v_bitrate: str, output_path: str | None = None, fo
         "-fps_mode", "passthrough",           # keep original timestamps / frame rate
         "-max_muxing_queue_size", "4096",
     ]
+    if test:
+        cmd += ["-ss", "0", "-t", f"{test_duration:.6f}"]
+    for excluded_index in sorted(excluded_indices):
+        cmd += ["-map", f"-0:{excluded_index}"]
 
     abort = False
+    converted_indices = set()
     for s in video_streams:
-        i = s["index"]                        # with -map 0, output index == input index
-        hdr_params, warnings = build_hdr_params(s, probe_first_frame_side_data(input_path, i))
+        i = s["index"]
+        output_index = output_indices[i]
+        frame_side = (probe_first_frame_side_data(input_path, i, start_time) if test
+                  else probe_first_frame_side_data(input_path, i))
+        dovi = find_side_data(s.get("side_data_list", []) + frame_side, "DOVI configuration")
+        convert_dovi = (test or force) and dovi is not None and dovi.get("dv_profile") == 5
+        hdr_params, warnings = build_hdr_params(s, frame_side)
+        if convert_dovi:
+            if not find_side_data(frame_side, "Dolby Vision Metadata"):
+                print(f"[ERROR] stream #{i}: decoder did not expose Dolby Vision metadata; "
+                      "cannot safely convert profile 5.")
+                sys.exit(2)
+            subprocess.run([
+                FFMPEG, "-v", "error",
+                *(["-ss", f"{start_time:.6f}"] if test else []),
+                "-i", input_path, "-map", f"0:{i}",
+                "-vf", DOVI_HDR_FILTER, "-frames:v", "1", "-f", "null", "-",
+            ], check=True)
+            converted_indices.add(i)
+            hdr_params = []
+            warnings = []
+            print(f"[INFO] Video #{i}: applying Dolby Vision profile 5 metadata with libplacebo; "
+                  "output is BT.2020/PQ HDR, not Dolby Vision.")
         for w in warnings:
             print(f"[WARN] stream #{i}: {w}")
-            if "WILL be wrong" in w and not force:
+            if "WILL be wrong" in w:
                 abort = True
 
         pix_fmt = s.get("pix_fmt", "")
@@ -229,24 +327,27 @@ def reencode(input_path: str, v_bitrate: str, output_path: str | None = None, fo
             print(f"[WARN] stream #{i}: source is {pix_fmt}; SVT-AV1 only supports 4:2:0, chroma will be subsampled.")
 
         cmd += [
-            f"-c:{i}", "libsvtav1",           # AV1 encode, no filters -> resolution untouched
-            f"-b:{i}", v_bitrate,
-            f"-pix_fmt:{i}", "yuv420p10le",   # 10-bit (required to keep HDR, harmless for SDR)
+            f"-c:{output_index}", "libsvtav1",
+            f"-b:{output_index}", v_bitrate,
+            f"-pix_fmt:{output_index}", "yuv420p10le",
         ]
+        if convert_dovi:
+            cmd += [f"-filter:{output_index}", DOVI_HDR_FILTER]
+        color_stream = {**s, **HDR_COLOR_PROPERTIES} if convert_dovi else s
         # Explicitly carry color signalling so it can't be lost or defaulted
         for opt, key in (("color_primaries", "color_primaries"),
                          ("color_trc", "color_transfer"),
                          ("colorspace", "color_space"),
                          ("color_range", "color_range"),
                          ("chroma_sample_location", "chroma_location")):
-            val = s.get(key)
+            val = color_stream.get(key)
             if val and val != "unknown" and val != "unspecified":
-                cmd += [f"-{opt}:{i}", val]
+                cmd += [f"-{opt}:{output_index}", val]
         if hdr_params:
-            cmd += [f"-svtav1-params:{i}", ":".join(hdr_params)]
+            cmd += [f"-svtav1-params:{output_index}", ":".join(hdr_params)]
 
         print(f"[INFO] Video #{i}: AV1 {v_bitrate}, {s.get('width')}x{s.get('height')} "
-              f"SAR {s.get('sample_aspect_ratio', '1:1')}, transfer={s.get('color_transfer', 'unknown')}"
+              f"SAR {s.get('sample_aspect_ratio', '1:1')}, transfer={color_stream.get('color_transfer', 'unknown')}"
               + (f", HDR params: {':'.join(hdr_params)}" if hdr_params else ""))
 
     if abort:
@@ -259,24 +360,35 @@ def reencode(input_path: str, v_bitrate: str, output_path: str | None = None, fo
     print(f"[INFO] Output  : {output_path}")
     print("[INFO] Audio / subtitles / attachments / chapters: copied unchanged")
 
-    subprocess.run(cmd, check=True)
+    if remux_attachments:
+        with tempfile.TemporaryDirectory(prefix="av1-remux-", dir=Path(output_path).parent) as directory:
+            cmd[-1] = str(Path(directory) / "encoded.mkv")
+            subprocess.run(cmd, check=True)
+            subprocess.run([
+                MKVMERGE, "-o", output_path, cmd[-1],
+                "--no-video", "--no-audio", "--no-subtitles", "--no-buttons",
+                "--no-chapters", "--no-global-tags", "--no-track-tags", input_path,
+            ], check=True)
+    else:
+        subprocess.run(cmd, check=True)
 
     print("[INFO] Verifying output against source...")
-    if not verify(streams, output_path):
-        print("[ERROR] Output differs from source in more than the video codec (see above).")
+    if not verify(streams, output_path, converted_indices):
+        print("[ERROR] Output differs from the expected codec/color conversion or copied streams (see above).")
         sys.exit(3)
     print(f"[DONE] Verified and saved to: {output_path}")
+    if test:
+        print("[INFO] Watch the test segment to verify colors and quality, then use --force for the full encode.")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Re-encode only the video of an MKV to AV1; copy everything else.")
     parser.add_argument("input", help="Path to the source MKV file.")
-    parser.add_argument("--v-bitrate", default="21000k",
-                        help="Target video bitrate for AV1 (default: 21000k).")
-    parser.add_argument("--output", default=None,
-                        help="Output file path (optional; auto-generated if omitted).")
-    parser.add_argument("--force", action="store_true",
-                        help="Encode even if the source is Dolby Vision without an HDR10 base layer.")
+    parser.add_argument("--v-bitrate", default="21000k", help="Target video bitrate for AV1 (default: 21000k).")
+    parser.add_argument("--output", default=None, help="Output file path (optional; auto-generated if omitted).")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--test", action="store_true", help="Convert a random one-minute segment for visual verification.")
+    mode.add_argument("--force", action="store_true", help="Run the full encode with Dolby Vision profile 5 color conversion.")
+    parser.add_argument("--dovi-to-hdr10", action="store_true", help="Legacy flag; use --test or --force for profile 5.")
     args = parser.parse_args()
-
-    reencode(args.input, args.v_bitrate, args.output, args.force)
+    reencode(args.input, args.v_bitrate, args.output, args.force, args.dovi_to_hdr10, args.test)
