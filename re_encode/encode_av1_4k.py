@@ -127,6 +127,22 @@ HDR_COLOR_PROPERTIES = {
     "color_space": "bt2020nc",
     "color_range": "tv",
 }
+# Dolby Vision mastering primaries default to P3-D65 when no L9 metadata is present.
+P3_D65_PRIMARIES = "G(0.2650,0.6900)B(0.1500,0.0600)R(0.6800,0.3200)WP(0.3127,0.3290)"
+
+
+def pq_to_nits(code: int, bits: int = 12) -> float:
+    e = (code / ((1 << bits) - 1)) ** (1 / 78.84375)
+    return 10000 * (max(e - 0.8359375, 0) / (18.8515625 - 18.6875 * e)) ** (1 / 0.1593017578125)
+
+
+def dovi_mastering_display(frame_side_data: list) -> str | None:
+    meta = find_side_data(frame_side_data, "Dolby Vision Metadata")
+    if not meta or not meta.get("source_max_pq"):
+        return None
+    max_nits = pq_to_nits(meta["source_max_pq"])
+    min_nits = pq_to_nits(meta.get("source_min_pq", 0))
+    return f"mastering-display={P3_D65_PRIMARIES}L({max_nits:.4f},{min_nits:.4f})"
 
 
 def build_hdr_params(stream: dict, frame_side_data: list) -> tuple[list, list]:
@@ -157,8 +173,10 @@ def build_hdr_params(stream: dict, frame_side_data: list) -> tuple[list, list]:
         profile = dovi.get("dv_profile")
         compat = dovi.get("dv_bl_signal_compatibility_id")
         if profile == 5 or compat == 0:
-            warnings.append(f"DOLBY VISION profile {profile} has no HDR10/SDR base layer."
-                            "\nUse --test to create a one-minute color-aware segment")
+            warnings.append(f"Dolby Vision profile {profile} has no HDR10/SDR base layer; "
+                            "a plain re-encode would have wrong colors.\n"
+                            "  --test   convert a random 1-minute segment to check colors\n"
+                            "  --force  run the full color-converted encode\n")
         else:
             warnings.append(f"Dolby Vision profile {profile} RPU will be dropped; "
                             "the HDR10/HLG/SDR base layer is kept.")
@@ -313,13 +331,14 @@ def reencode(input_path: str, v_bitrate: str, output_path: str | None = None,
                 "-vf", DOVI_HDR_FILTER, "-frames:v", "1", "-f", "null", "-",
             ], check=True)
             converted_indices.add(i)
-            hdr_params = []
+            mastering = dovi_mastering_display(frame_side)
+            hdr_params = [mastering] if mastering else []
             warnings = []
             print(f"[INFO] Video #{i}: applying Dolby Vision profile 5 metadata with libplacebo; "
                   "output is BT.2020/PQ HDR, not Dolby Vision.")
         for w in warnings:
             print(f"[WARN] stream #{i}: {w}")
-            if "WILL be wrong" in w:
+            if "no HDR10/SDR base layer" in w:
                 abort = True
 
         pix_fmt = s.get("pix_fmt", "")
@@ -351,7 +370,7 @@ def reencode(input_path: str, v_bitrate: str, output_path: str | None = None,
               + (f", HDR params: {':'.join(hdr_params)}" if hdr_params else ""))
 
     if abort:
-        print("[ERROR] Aborting to avoid a broken encode (see warnings above).")
+        print("[ERROR] Aborting to avoid a broken encode. Rerun with --test or --force.\n")
         sys.exit(2)
 
     cmd.append(output_path)
